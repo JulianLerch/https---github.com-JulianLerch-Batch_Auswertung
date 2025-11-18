@@ -1,0 +1,191 @@
+{
+  "timestamp": "20251117_215405",
+  "config": {
+    "dt": 0.1,
+    "min_frames": 10,
+    "max_frames": 2000,
+    "diffusion_params": {
+      "normal": {
+        "D": 0.3,
+        "alpha": 1.0,
+        "name": "Normal Diffusion"
+      },
+      "subdiffusion": {
+        "D": 0.15,
+        "alpha": 0.45,
+        "hurst": 0.3,
+        "name": "Subdiffusion (fBm)"
+      },
+      "confined": {
+        "D": 0.09,
+        "radius": 0.32,
+        "name": "Confined Diffusion"
+      },
+      "superdiffusion": {
+        "D": 0.35,
+        "alpha": 1.5,
+        "hurst": 0.75,
+        "persistence": 0.92,
+        "name": "Superdiffusion"
+      }
+    },
+    "rf_params": {
+      "n_estimators": 1000,
+      "max_depth": 50,
+      "min_samples_split": 10,
+      "min_samples_leaf": 5,
+      "max_features": "sqrt",
+      "bootstrap": true,
+      "oob_score": true,
+      "class_weight": "balanced",
+      "random_state": 42,
+      "n_jobs": -1
+    }
+  },
+  "feature_names": [
+    "alpha",
+    "D",
+    "hurst_exponent",
+    "msd_ratio",
+    "msd_plateauness",
+    "convex_hull_area",
+    "space_exploration_ratio",
+    "boundary_proximity_var",
+    "rg_saturation",
+    "asphericity",
+    "efficiency",
+    "straightness",
+    "mean_cos_theta",
+    "persistence_length",
+    "vacf_lag1",
+    "vacf_min",
+    "kurtosis",
+    "fractal_dimension",
+    "confinement_probability",
+    "axial_range",
+    "axial_std",
+    "axial_ratio",
+    "vertical_drift",
+    "axial_persistence"
+  ],
+  "label_mapping": {
+    "normal": 0,
+    "subdiffusion": 1,
+    "confined": 2,
+    "superdiffusion": 3
+  },
+  "training_history": {
+    "iterations": [
+      1
+    ],
+    "oob_scores": [
+      0.9959375
+    ],
+    "f1_macro_scores": [
+      0.9937437265232908
+    ],
+    "n_tracks_per_iteration": [
+      {
+        "normal": 1000,
+        "subdiffusion": 1000,
+        "confined": 1000,
+        "superdiffusion": 1000
+      }
+    ]
+  },
+  "final_performance": {
+    "f1_macro": 0.9937437265232908,
+    "oob_score": 0.9959375,
+    "report": {
+      "0": {
+        "precision": 0.99,
+        "recall": 0.99,
+        "f1-score": 0.99,
+        "support": 200.0
+      },
+      "1": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 200.0
+      },
+      "2": {
+        "precision": 0.9899497487437185,
+        "recall": 0.985,
+        "f1-score": 0.9874686716791979,
+        "support": 200.0
+      },
+      "3": {
+        "precision": 0.9950248756218906,
+        "recall": 1.0,
+        "f1-score": 0.9975062344139651,
+        "support": 200.0
+      },
+      "accuracy": 0.99375,
+      "macro avg": {
+        "precision": 0.9937436560914022,
+        "recall": 0.99375,
+        "f1-score": 0.9937437265232908,
+        "support": 800.0
+      },
+      "weighted avg": {
+        "precision": 0.9937436560914022,
+        "recall": 0.99375,
+        "f1-score": 0.9937437265232907,
+        "support": 800.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        198,
+        0,
+        2,
+        0
+      ],
+      [
+        0,
+        200,
+        0,
+        0
+      ],
+      [
+        2,
+        0,
+        197,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        200
+      ]
+    ]
+  },
+  "feature_importance": {
+    "alpha": 0.009333804902391172,
+    "D": 0.029173298771375027,
+    "hurst_exponent": 0.011084786907803637,
+    "msd_ratio": 0.021625471860270088,
+    "msd_plateauness": 0.03705310336932527,
+    "convex_hull_area": 0.14478834979307525,
+    "space_exploration_ratio": 0.03673479789001107,
+    "boundary_proximity_var": 0.06348939132372292,
+    "rg_saturation": 0.007442709871534844,
+    "asphericity": 0.16305780018962202,
+    "efficiency": 0.015701296015459304,
+    "straightness": 0.01721389300788077,
+    "mean_cos_theta": 0.014686712751326507,
+    "persistence_length": 0.043013572152289514,
+    "vacf_lag1": 0.0239518019931497,
+    "vacf_min": 0.018262583698903944,
+    "kurtosis": 0.017260963097132858,
+    "fractal_dimension": 0.0,
+    "confinement_probability": 0.0004363372564963781,
+    "axial_range": 0.0780865708585371,
+    "axial_std": 0.07146882463678667,
+    "axial_ratio": 0.17351135891084513,
+    "vertical_drift": 0.0010424745723322856,
+    "axial_persistence": 0.0015800961697285836
+  }
+}
