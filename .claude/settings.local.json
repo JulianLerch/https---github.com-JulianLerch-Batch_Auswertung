@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python quick_test_optimized.py:*)",
+      "Bash(python train_rf_optimized.py:*)",
+      "Bash(rm:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -27,6 +27,8 @@ from data_loading_3d import (
 )
 from tracking_3d import process_3d_localizations
 from viz_3d import plot_all_tracks_3d, plot_interactive_top_tracks
+from threshold_classifier import create_complete_threshold_analysis
+from classification_summary import create_combined_classification_summary as _create_combined_classification_summary
 
 # Import for time series analysis
 import time_series
@@ -58,7 +60,7 @@ def analyze_3d_folder(
     int_time=DEFAULT_INT_TIME,
     n_longest=10,
     do_clustering=True,
-    do_rf=True,
+    do_rf=False,  # RF removed - only clustering now
     rf_model_path=None
 ):
     """
@@ -146,8 +148,16 @@ def analyze_3d_folder(
             'rf': {}
         }
 
-    # Select Top 10 longest for VISUALIZATION only
-    selected_tracks_for_viz = select_longest_tracks(valid_tracks, n=n_longest)
+    # Limit number of tracks used for heavy analysis/statistics to keep runtime reasonable
+    max_analysis_tracks = 20
+    if len(valid_tracks) > max_analysis_tracks:
+        analysis_tracks = select_longest_tracks(valid_tracks, n=max_analysis_tracks)
+        logger.info(f"  Verwende nur die {len(analysis_tracks)} l��ngsten Tracks fǬr Analyse/Statistik (von {len(valid_tracks)} g��ltigen)")
+    else:
+        analysis_tracks = valid_tracks
+
+    # Select Top 10 longest for VISUALIZATION only (from analysis set)
+    selected_tracks_for_viz = select_longest_tracks(analysis_tracks, n=min(n_longest, len(analysis_tracks)))
     logger.info(f"  ✓ Top {len(selected_tracks_for_viz)} längste Tracks für Visualisierung ausgewählt")
 
     # Step 4: Visualization (Top 10 längste Tracks)
@@ -165,18 +175,18 @@ def analyze_3d_folder(
         n=min(INTERACTIVE_3D_TOP_N, len(selected_tracks_for_viz))
     )
 
-    # Z-Position Histogram (all tracks)
+    # Z-Position Histogramm (Analyse-Tracks, max. 20)
     logger.info("  Erstelle z-Positions Histogramm...")
     from viz_3d import plot_z_histogram
     z_hist_path = os.path.join(output_structure['base'], 'z_position_histogram.svg')
-    plot_z_histogram(valid_tracks, z_hist_path)
+    plot_z_histogram(analysis_tracks, z_hist_path)
     logger.info(f"  ✓ z-Histogramm erstellt: {z_hist_path}")
 
-    # Step 5: MSD Analysis (ALL valid tracks)
-    logger.info(f"SCHRITT 5: MSD-Analyse ({len(valid_tracks)} Tracks)...")
+    # Step 5: MSD Analysis (analysis tracks, max. 20)
+    logger.info(f"SCHRITT 5: MSD-Analyse ({len(analysis_tracks)} Tracks)...")
     msd_results = {}
 
-    for track in valid_tracks:
+    for track in analysis_tracks:
         track_id = track['track_id']
 
         # NonOverlap MSD
@@ -257,11 +267,11 @@ def analyze_3d_folder(
 
     logger.info(f"  ✓ MSD-Plots erstellt: {msd_plots_folder}")
 
-    # Step 6: Feature Calculation (ALL valid tracks)
-    logger.info(f"SCHRITT 6: Feature-Berechnung ({len(valid_tracks)} Tracks)...")
+    # Step 6: Feature Calculation (analysis tracks, max. 20)
+    logger.info(f"SCHRITT 6: Feature-Berechnung ({len(analysis_tracks)} Tracks)...")
     features_list = []
 
-    for track in valid_tracks:
+    for track in analysis_tracks:
         # Calculate 3D features (uses trajectory_statistics with 3D data)
         features = calculate_trajectory_features(track, int_time)
         features['track_id'] = track['track_id']
@@ -272,13 +282,13 @@ def analyze_3d_folder(
     features_df.to_csv(features_csv, index=False)
     logger.info(f"  ✓ Features für {len(features_list)} Tracks berechnet")
 
-    # Step 7: Clustering (optional) - ALL valid tracks
+    # Step 7: Clustering (optional) - analysis tracks, max. 20
     clustering_results = None
     if do_clustering:
-        logger.info(f"SCHRITT 7: Clustering ({len(valid_tracks)} Tracks)...")
+        logger.info(f"SCHRITT 7: Unsupervised Clustering ({len(analysis_tracks)} Tracks)...")
         try:
             clustering_results = perform_clustering_analysis(
-                valid_tracks,
+                analysis_tracks,
                 int_time,
                 output_structure['clustering']
             )
@@ -286,22 +296,41 @@ def analyze_3d_folder(
         except Exception as e:
             logger.error(f"  ❌ Clustering fehlgeschlagen: {e}")
 
-    # Step 8: Random Forest (optional) - ALL valid tracks
+    # Step 8: Threshold Classification (NEW!) - analysis tracks, max. 20
+    threshold_results = None
+    logger.info(f"SCHRITT 8: Threshold-Klassifizierung ({len(analysis_tracks)} Tracks)...")
+    try:
+        threshold_results = create_complete_threshold_analysis(
+            analysis_tracks,
+            int_time,
+            output_structure['threshold']
+        )
+        logger.info(f"  ✓ Threshold-Klassifizierung abgeschlossen")
+    except Exception as e:
+        logger.error(f"  ❌ Threshold-Klassifizierung fehlgeschlagen: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Step 9: Random Forest (optional, deaktiviert) - analysis tracks, max. 20
     rf_results = None
     if do_rf and rf_model_path:
-        logger.info(f"SCHRITT 8: Random Forest Klassifikation ({len(valid_tracks)} Tracks)...")
+        logger.info(f"SCHRITT 8: Random Forest Klassifikation ({len(analysis_tracks)} Tracks)...")
         try:
             # rf_model_path ist jetzt ein Tupel (model, scaler, metadata)
             model, scaler, metadata = rf_model_path
 
             if model is not None:
+                # Create temporary RF folder if RF is actually used
+                rf_folder = os.path.join(output_structure['base'], '08_RandomForest')
+                os.makedirs(rf_folder, exist_ok=True)
+
                 rf_results = classify_3d_tracks_rf(
-                    valid_tracks,
+                    analysis_tracks,
                     model,
                     scaler,
                     metadata,
                     int_time,
-                    output_structure['rf'],
+                    rf_folder,
                     track_features_df=features_df
                 )
                 logger.info(f"  ✓ Random Forest abgeschlossen")
@@ -345,6 +374,77 @@ def analyze_3d_folder(
         features_df['cluster_class'] = features_df['track_id'].map(_get_cluster_class_for_track)
         logger.info("  ✓ Clustering-Klassen zu Features hinzugefügt")
 
+    if threshold_results:
+        # Add threshold_class column AND update features with segment-averaged values
+        def _get_threshold_class_for_track(tid):
+            result = threshold_results.get(tid)
+            if not result:
+                return 'UNKNOWN'
+            return result.get('track_class', 'UNKNOWN')
+
+        def _get_threshold_confidence_for_track(tid):
+            result = threshold_results.get(tid)
+            if not result:
+                return np.nan
+            return result.get('confidence', np.nan)
+
+        def _get_segment_averaged_alpha(tid):
+            """Get median alpha from all segments (used for classification)"""
+            result = threshold_results.get(tid)
+            if not result:
+                return np.nan
+            segments = result.get('segments', [])
+            if not segments:
+                return np.nan
+
+            # Extract alpha from all segments
+            alphas = []
+            for seg in segments:
+                seg_alpha = seg.get('alpha', np.nan)
+                if not np.isnan(seg_alpha) and seg_alpha > 0:  # Valid alpha only
+                    alphas.append(seg_alpha)
+
+            # Return median of segment alphas (more robust than mean)
+            return np.median(alphas) if alphas else np.nan
+
+        def _get_segment_averaged_D(tid):
+            """Get median D from all segments (used for classification)"""
+            result = threshold_results.get(tid)
+            if not result:
+                return np.nan
+            segments = result.get('segments', [])
+            if not segments:
+                return np.nan
+
+            # Extract D from all segments (D is in the 'features' dict)
+            Ds = []
+            for seg in segments:
+                # Try direct D first, then features dict
+                seg_D = seg.get('D', np.nan)
+                if np.isnan(seg_D) and 'features' in seg:
+                    seg_D = seg['features'].get('D', np.nan)
+
+                if not np.isnan(seg_D) and seg_D > 0:  # Valid D only
+                    Ds.append(seg_D)
+
+            # Return median of segment Ds
+            return np.median(Ds) if Ds else np.nan
+
+        features_df['threshold_class'] = features_df['track_id'].map(_get_threshold_class_for_track)
+        features_df['threshold_confidence'] = features_df['track_id'].map(_get_threshold_confidence_for_track)
+
+        # CRITICAL FIX: Update alpha and D with segment-averaged values
+        # This ensures time series plots show the SAME alpha/D used for classification!
+        segment_alphas = features_df['track_id'].map(_get_segment_averaged_alpha)
+        segment_Ds = features_df['track_id'].map(_get_segment_averaged_D)
+
+        # Only update if we have valid segment values (otherwise keep original track-level values)
+        features_df['alpha'] = segment_alphas.where(segment_alphas.notna(), features_df['alpha'])
+        features_df['D'] = segment_Ds.where(segment_Ds.notna(), features_df['D'])
+
+        logger.info("  ✓ Threshold-Klassen zu Features hinzugefügt")
+        logger.info("  ✓ Alpha & D mit Segment-Medians aktualisiert (statt Track-Level)")
+
     if rf_results:
         # Add predicted_class column
         def _get_rf_summary_for_track(tid):
@@ -384,25 +484,43 @@ def analyze_3d_folder(
         _create_longest_classified_track_plots(
             valid_tracks,
             clustering_results,
+            threshold_results,
             rf_results,
             longest_folder,
             top_n=20
         )
-        logger.info(f"  ✓ Longest Track Plots erstellt: {longest_folder}")
+        logger.info(f"  ✓ Longest Track Plots erstellt (separate xy/xz/yz/3D): {longest_folder}")
     except Exception as e:
         logger.warning(f"  ⚠ Longest Track Plots fehlgeschlagen: {e}")
         import traceback
         traceback.print_exc()
 
-    # Save updated features (with clustering/RF classes)
+    # Save updated features (with clustering/RF/threshold classes)
     features_csv = os.path.join(output_structure['base'], 'features_3d_complete.csv')
     features_df.to_csv(features_csv, index=False)
+
+    # Create combined classification summary (Clustering vs Threshold)
+    if clustering_results and threshold_results:
+        try:
+            summary_folder = os.path.join(output_structure['base'], 'classification_summary')
+            _create_combined_classification_summary(
+                features_df,
+                clustering_results,
+                threshold_results,
+                summary_folder
+            )
+            logger.info(f"  ✓ Kombinierte Klassifizierungs-Summary erstellt: {summary_folder}")
+        except Exception as e:
+            logger.warning(f"  ⚠ Summary-Erstellung fehlgeschlagen: {e}")
+            import traceback
+            traceback.print_exc()
 
     return {
         'folder': folder_path,
         'n_localizations': len(locs_df),
         'n_tracks': len(tracks),
         'n_valid': len(valid_tracks),
+        'n_analyzed': len(analysis_tracks),
         'n_visualized': len(selected_tracks_for_viz),
         'n_selected': len(selected_tracks_for_viz),
         'output': output_structure['base'],
@@ -499,8 +617,9 @@ def analyze_3d_time_series(
         summary_folder = os.path.join(output_folder, 'Summary')
         os.makedirs(summary_folder, exist_ok=True)
 
-        # Check if we have clustering and/or RF results
+        # Check if we have clustering, threshold and/or RF results
         has_clustering = 'cluster_class' in combined_features.columns
+        has_threshold = 'threshold_class' in combined_features.columns
         has_rf = 'rf_class' in combined_features.columns
         combined_method_parts = []
 
@@ -527,6 +646,29 @@ def analyze_3d_time_series(
                     clustering_part.rename(columns={'cluster_class': 'Class'}, inplace=True)
                     clustering_part['Method'] = 'Clustering'
                     combined_method_parts.append(clustering_part)
+
+            # Create THRESHOLD Time Series (if available)
+            if has_threshold:
+                logger.info("\n  === THRESHOLD TIME SERIES ===")
+                threshold_summary = os.path.join(summary_folder, 'Threshold')
+                os.makedirs(threshold_summary, exist_ok=True)
+
+                _create_3d_time_series_plots(
+                    combined_features,
+                    threshold_summary,
+                    class_col='threshold_class'
+                )
+                logger.info("  ✓ Threshold Time-Series Plots erstellt")
+
+                # Prepare threshold part for combined summary
+                threshold_part = combined_features.copy()
+                if 'Class' in threshold_part.columns:
+                    threshold_part = threshold_part.drop(columns=['Class'])
+                threshold_part = threshold_part[threshold_part['threshold_class'].isin(NEW_CLASSES)].copy()
+                if not threshold_part.empty:
+                    threshold_part.rename(columns={'threshold_class': 'Class'}, inplace=True)
+                    threshold_part['Method'] = 'Threshold'
+                    combined_method_parts.append(threshold_part)
 
             # Create RF Time Series (if available)
             if has_rf:
@@ -562,7 +704,7 @@ def analyze_3d_time_series(
                 )
                 logger.info("  ✓ Combined Time-Series Plots erstellt")
 
-            if not has_clustering and not has_rf:
+            if not has_clustering and not has_threshold and not has_rf:
                 logger.warning("  ⚠ Keine Klassifikation verfügbar - erstelle Basis-Plots")
                 _create_3d_time_series_plots(
                     combined_features,
@@ -614,6 +756,8 @@ def _create_3d_time_series_plots(combined_df, output_folder, class_col=None):
         logger.info("  Verwende RF-Klassifikation für Time Series Plots")
     elif class_col == 'cluster_class':
         logger.info("  Verwende Clustering-Klassifikation für Time Series Plots")
+    elif class_col == 'threshold_class':
+        logger.info("  Verwende Threshold-Klassifikation für Time Series Plots")
     else:
         logger.info(f"  Verwende Klassifikation '{class_col}' für Time Series Plots")
 
@@ -729,6 +873,8 @@ def _create_3d_time_series_plots(combined_df, output_folder, class_col=None):
         excel_path = os.path.join(summary_data_folder, 'd_statistics.xlsx')
         if class_col == 'cluster_class':
             method_name = 'Clustering'
+        elif class_col == 'threshold_class':
+            method_name = 'Threshold'
         elif class_col == 'rf_class':
             method_name = 'Random Forest'
         else:
@@ -752,16 +898,18 @@ def _create_3d_time_series_plots(combined_df, output_folder, class_col=None):
 #          LONGEST TRACK VISUALIZATION (CLUSTERING + RF)
 # =====================================================
 
-def _create_longest_classified_track_plots(tracks, clustering_results, rf_results,
+def _create_longest_classified_track_plots(tracks, clustering_results, threshold_results, rf_results,
                                            output_folder, top_n=20):
     """
-    Create combined track plots (Clustering + RF) for the longest tracks.
+    Create track plots (Clustering + Threshold + RF) for the longest tracks.
+    Creates SEPARATE plots for each view (xy, xz, yz, 3D).
 
     Args:
         tracks (list): List of track dicts (with 'track_id', 'x', 'y', 'z', ...)
         clustering_results (dict): Results from perform_clustering_analysis
+        threshold_results (dict): Results from threshold classifier
         rf_results (dict): Results from classify_3d_tracks_rf
-        output_folder (str): Output folder for SVGs
+        output_folder (str): Output folder for plots
         top_n (int): Number of longest tracks to plot
     """
     if not tracks:
@@ -769,7 +917,7 @@ def _create_longest_classified_track_plots(tracks, clustering_results, rf_result
 
     os.makedirs(output_folder, exist_ok=True)
 
-    from viz_3d import plot_classified_track_3d
+    from viz_3d import plot_classified_track_3d_separate
 
     track_dict = {track['track_id']: track for track in tracks if track.get('track_id') is not None}
     if not track_dict:
@@ -778,24 +926,36 @@ def _create_longest_classified_track_plots(tracks, clustering_results, rf_result
     sorted_tracks = sorted(track_dict.items(), key=lambda kv: len(kv[1].get('x', [])), reverse=True)
     selected_tracks = sorted_tracks[:top_n]
 
-    logger.info(f"  Starte Erstellung der Top-{len(selected_tracks)} Longest Track Plots...")
+    logger.info(f"  Starte Erstellung der Top-{len(selected_tracks)} Longest Track Plots (separate xy/xz/yz/3D)...")
 
     for track_id, track in selected_tracks:
-        if clustering_results:
+        # Clustering plots
+        if clustering_results and track_id in clustering_results:
             clustering_segments = clustering_results.get(track_id, {}).get('segments', [])
-            output_path = os.path.join(output_folder, f'track_{track_id:04d}_clustering.svg')
+            track_folder = os.path.join(output_folder, f'track_{track_id:04d}_clustering')
             try:
-                plot_classified_track_3d(track, clustering_segments, output_path,
-                                         title=f'Track {track_id} (Clustering)')
+                plot_classified_track_3d_separate(track, clustering_segments, track_folder,
+                                                  track_id, title_prefix='Clustering Track')
             except Exception as e:
                 logger.warning(f"    Clustering-Plot für Track {track_id} fehlgeschlagen: {e}")
 
-        if rf_results:
-            rf_segments = rf_results.get(track_id, {}).get('segments', [])
-            output_path = os.path.join(output_folder, f'track_{track_id:04d}_rf.svg')
+        # Threshold plots
+        if threshold_results and track_id in threshold_results:
+            threshold_segments = threshold_results.get(track_id, {}).get('segments', [])
+            track_folder = os.path.join(output_folder, f'track_{track_id:04d}_threshold')
             try:
-                plot_classified_track_3d(track, rf_segments, output_path,
-                                         title=f'Track {track_id} (RF)')
+                plot_classified_track_3d_separate(track, threshold_segments, track_folder,
+                                                  track_id, title_prefix='Threshold Track')
+            except Exception as e:
+                logger.warning(f"    Threshold-Plot für Track {track_id} fehlgeschlagen: {e}")
+
+        # RF plots
+        if rf_results and track_id in rf_results:
+            rf_segments = rf_results.get(track_id, {}).get('segments', [])
+            track_folder = os.path.join(output_folder, f'track_{track_id:04d}_rf')
+            try:
+                plot_classified_track_3d_separate(track, rf_segments, track_folder,
+                                                  track_id, title_prefix='RF Track')
             except Exception as e:
                 logger.warning(f"    RF-Plot für Track {track_id} fehlgeschlagen: {e}")
 
@@ -809,81 +969,50 @@ def load_3d_rf_model(folder_path=None):
     """
     Load 3D Random Forest model with scaler and metadata.
 
+    Automatically detects and prefers OPTIMIZED models (12 features) over legacy models (29 features).
+
     Args:
         folder_path (str): Optional path to folder containing model
 
     Returns:
         tuple: (model, scaler, metadata) or (None, None, None) if not found
-               - model: sklearn RandomForestClassifier
+               - model: sklearn RandomForestClassifier or EnsembleClassifier
                - scaler: sklearn StandardScaler
                - metadata: dict with feature_names, label_mapping, etc.
     """
-    import glob
-    import pickle
-    import json
+    from random_forest_classification import find_rf_model_files, load_rf_model_and_scaler
 
     if folder_path is None:
         # Check in 3D folder
         folder_path = os.path.join(os.path.dirname(__file__), '3D')
 
-    # Find RF model files
-    models = glob.glob(os.path.join(folder_path, 'rf_diffusion_classifier_*.pkl'))
+    # Use the optimized model finder (prefers rf_optimized_*.pkl over rf_diffusion_classifier_*.pkl)
+    model_path, scaler_path, metadata_path = find_rf_model_files(
+        search_dir=folder_path,
+        prefer_optimized=True
+    )
 
-    if not models:
+    if model_path is None:
         logger.warning(f"Kein 3D RF-Modell gefunden in {folder_path}")
         return None, None, None
 
-    # Use newest model (based on filename)
-    model_path = sorted(models)[-1]
+    # Load using the centralized loader
+    model, scaler, metadata = load_rf_model_and_scaler(model_path, scaler_path, metadata_path)
 
-    # Extract timestamp from model filename
-    # Format: rf_diffusion_classifier_YYYYMMDD_HHMMSS.pkl
-    filename = os.path.basename(model_path)
-    timestamp = filename.replace('rf_diffusion_classifier_', '').replace('.pkl', '')
-
-    # Construct paths for scaler and metadata
-    scaler_path = os.path.join(folder_path, f'feature_scaler_{timestamp}.pkl')
-    metadata_path = os.path.join(folder_path, f'model_metadata_{timestamp}.json')
-
-    # Load model
-    try:
-        with open(model_path, 'rb') as f:
-            model = pickle.load(f)
-        logger.info(f"  ✓ 3D RF-Modell geladen: {os.path.basename(model_path)}")
-    except Exception as e:
-        logger.error(f"  ❌ Fehler beim Laden des Modells: {e}")
+    if model is None or metadata is None:
+        logger.error("  ❌ Fehler beim Laden des RF-Modells!")
         return None, None, None
 
-    # Load scaler
-    scaler = None
-    if os.path.exists(scaler_path):
-        try:
-            with open(scaler_path, 'rb') as f:
-                scaler = pickle.load(f)
-            logger.info(f"  ✓ Feature-Scaler geladen: {os.path.basename(scaler_path)}")
-        except Exception as e:
-            logger.warning(f"  ⚠ Fehler beim Laden des Scalers: {e}")
-    else:
-        logger.warning(f"  ⚠ Scaler nicht gefunden: {scaler_path}")
+    if scaler is None:
+        logger.info("  ℹ️ RF-Modell nutzt internen Scaler (kein externer StandardScaler erforderlich).")
 
-    # Load metadata
-    metadata = None
-    if os.path.exists(metadata_path):
-        try:
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
-            logger.info(f"  ✓ Metadata geladen: {os.path.basename(metadata_path)}")
-            logger.info(f"    Features: {len(metadata['feature_names'])}")
-            logger.info(f"    OOB Score: {metadata['final_performance']['oob_score']:.4f}")
-        except Exception as e:
-            logger.warning(f"  ⚠ Fehler beim Laden der Metadata: {e}")
-    else:
-        logger.warning(f"  ⚠ Metadata nicht gefunden: {metadata_path}")
-
-    # Verify scaler and metadata are present
-    if scaler is None or metadata is None:
-        logger.error("  ❌ Scaler oder Metadata fehlen - RF-Klassifikation nicht möglich!")
-        return None, None, None
+    # Log performance info
+    if 'final_performance' in metadata:
+        perf = metadata['final_performance']
+        if 'oob_score' in perf:
+            logger.info(f"    OOB Score: {perf['oob_score']:.4f}")
+        if 'test_f1' in perf:
+            logger.info(f"    Test F1: {perf['test_f1']:.4f}")
 
     return model, scaler, metadata
 
@@ -1251,6 +1380,184 @@ def _plot_msd_comparison_3d(msd_nonoverlap, msd_overlap, track_id, output_path, 
     plt.tight_layout()
     plt.savefig(output_path, format='svg', dpi=DPI_DEFAULT, bbox_inches='tight')
     plt.close(fig)
+
+
+def main():
+    """
+    Main entry point for 3D pipeline - runs GUI workflow.
+
+    Workflow:
+    1. z-Correction parameter GUI
+    2. Tracking parameter GUI
+    3. Folder selection
+    4. Time assignment (if multiple folders)
+    5. Run analysis
+    """
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, simpledialog
+    from gui_dialogs_3d import (
+        configure_3d_correction_parameters_gui,
+        configure_3d_tracking_parameters_gui
+    )
+
+    logger.info("="*80)
+    logger.info("3D TRAJECTORY ANALYSIS PIPELINE")
+    logger.info("="*80)
+
+    # Step 1: z-Correction Parameters
+    logger.info("\nSchritt 1/4: z-Korrektur Parameter konfigurieren...")
+    correction_params = configure_3d_correction_parameters_gui()
+    if not correction_params:
+        logger.error("Abbruch: Keine z-Korrektur Parameter angegeben")
+        return
+
+    logger.info(f"  ✓ n_oil={correction_params['n_oil']}, n_polymer={correction_params['n_polymer']}")
+    logger.info(f"  ✓ Methode: {correction_params['correction_method']}")
+
+    # Step 2: Tracking Parameters
+    logger.info("\nSchritt 2/4: Tracking Parameter konfigurieren...")
+    tracking_params = configure_3d_tracking_parameters_gui()
+    if not tracking_params:
+        logger.error("Abbruch: Keine Tracking Parameter angegeben")
+        return
+
+    logger.info(f"  ✓ Max Distance: {tracking_params['max_distance_nm']} nm")
+    logger.info(f"  ✓ Max Gap: {tracking_params['max_gap_frames']} frames")
+    logger.info(f"  ✓ Min Length: {tracking_params['min_track_length']} frames")
+
+    # Step 3: Folder Selection
+    logger.info("\nSchritt 3/4: Ordner auswählen...")
+
+    root = tk.Tk()
+    root.withdraw()
+
+    # Ask if single or multiple folders
+    choice = messagebox.askyesnocancel(
+        "Ordnerauswahl",
+        "Mehrere Ordner analysieren?\n\n"
+        "Ja = Mehrere Ordner (Time Series)\n"
+        "Nein = Einzelner Ordner\n"
+        "Abbrechen = Pipeline beenden"
+    )
+
+    if choice is None:
+        logger.info("Abbruch durch Benutzer")
+        return
+
+    folders = []
+    time_assignments = {}
+
+    if choice:  # Multiple folders
+        messagebox.showinfo(
+            "Ordnerauswahl",
+            "Bitte wählen Sie mehrere Ordner nacheinander aus.\n\n"
+            "Jeder Ordner sollte eine Localization.csv enthalten.\n"
+            "Klicken Sie 'Abbrechen' wenn Sie fertig sind."
+        )
+
+        while True:
+            folder = filedialog.askdirectory(
+                title=f"Ordner #{len(folders)+1} auswählen (oder Abbrechen für Fertig)"
+            )
+            if not folder:
+                break
+            folders.append(folder)
+            logger.info(f"  ✓ Ordner {len(folders)}: {os.path.basename(folder)}")
+
+        if len(folders) == 0:
+            logger.error("Keine Ordner ausgewählt!")
+            return
+
+        # Step 4: Time Assignment
+        logger.info("\nSchritt 4/4: Zeit-Zuweisungen eingeben...")
+        for folder in folders:
+            folder_name = os.path.basename(folder)
+
+            time_str = simpledialog.askstring(
+                "Polymerisationszeit",
+                f"Polymerisationszeit (Minuten) für:\n{folder_name}",
+                parent=root
+            )
+
+            if time_str is None:
+                logger.error("Abbruch: Keine Zeit zugewiesen")
+                return
+
+            try:
+                poly_time = float(time_str)
+                time_assignments[folder] = poly_time
+                logger.info(f"  ✓ {folder_name}: {poly_time} min")
+            except ValueError:
+                logger.error(f"Ungültige Eingabe: {time_str}")
+                return
+
+        # Select output folder
+        output_folder = filedialog.askdirectory(
+            title="Output-Ordner für Time Series auswählen"
+        )
+        if not output_folder:
+            logger.error("Kein Output-Ordner ausgewählt!")
+            return
+
+        logger.info(f"\nOutput: {output_folder}")
+
+        # Run time series analysis
+        logger.info("\n" + "="*80)
+        logger.info("STARTE TIME SERIES ANALYSE")
+        logger.info("="*80)
+
+        result = analyze_3d_time_series(
+            folders=folders,
+            time_assignments=time_assignments,
+            output_folder=output_folder,
+            correction_params=correction_params,
+            tracking_params=tracking_params,
+            int_time=DEFAULT_INT_TIME,
+            rf_model_path=None
+        )
+
+    else:  # Single folder
+        folder = filedialog.askdirectory(
+            title="Ordner mit Localization.csv auswählen"
+        )
+        if not folder:
+            logger.error("Kein Ordner ausgewählt!")
+            return
+
+        logger.info(f"  ✓ Ordner: {os.path.basename(folder)}")
+
+        # Select output folder
+        output_base = filedialog.askdirectory(
+            title="Output-Ordner auswählen"
+        )
+        if not output_base:
+            logger.error("Kein Output-Ordner ausgewählt!")
+            return
+
+        logger.info(f"\nOutput: {output_base}")
+
+        # Run single folder analysis
+        logger.info("\n" + "="*80)
+        logger.info("STARTE EINZELORDNER-ANALYSE")
+        logger.info("="*80)
+
+        result = analyze_3d_folder(
+            folder_path=folder,
+            output_base=output_base,
+            correction_params=correction_params,
+            tracking_params=tracking_params,
+            int_time=DEFAULT_INT_TIME,
+            n_longest=10,
+            do_clustering=True,
+            do_rf=False,
+            rf_model_path=None
+        )
+
+    logger.info("\n" + "="*80)
+    logger.info("✓ PIPELINE ERFOLGREICH ABGESCHLOSSEN!")
+    logger.info("="*80)
+
+    return result
 
 
 logger.info("✓ 3D Analysis Pipeline geladen")

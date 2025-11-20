@@ -255,9 +255,10 @@ def get_3d_output_structure(base_folder, folder_name):
         'clustering': os.path.join(analysis_folder, '07_Clustering'),
         'clustering_tracks': os.path.join(analysis_folder, '07_Clustering', 'Tracks'),
         'clustering_stats': os.path.join(analysis_folder, '07_Clustering', 'Statistics'),
-        'rf': os.path.join(analysis_folder, '08_RandomForest'),
-        'rf_tracks': os.path.join(analysis_folder, '08_RandomForest', 'Tracks'),
-        'rf_stats': os.path.join(analysis_folder, '08_RandomForest', 'Statistics'),
+        'threshold': os.path.join(analysis_folder, '08_Threshold_Based'),
+        'threshold_tracks': os.path.join(analysis_folder, '08_Threshold_Based', 'Tracks'),
+        'threshold_stats': os.path.join(analysis_folder, '08_Threshold_Based', 'Statistics'),
+        # RF removed - deactivated in pipeline (do_rf=False by default)
         'summary': os.path.join(analysis_folder, '09_Summary'),
         'longest_tracks': os.path.join(analysis_folder, '10_Longest_Classified_Tracks')
     }

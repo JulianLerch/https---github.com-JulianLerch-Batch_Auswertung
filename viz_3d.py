@@ -135,7 +135,7 @@ def plot_track_3d_projections(track, output_path, color='blue', title='Track'):
     ax4.scatter(x[-1], y[-1], z[-1], color='red', s=50, zorder=5, marker='s')
     ax4.set_xlabel('x / µm', fontsize=FONTSIZE_LABEL)
     ax4.set_ylabel('y / µm', fontsize=FONTSIZE_LABEL)
-    ax4.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL)
+    ax4.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL, labelpad=20)  # Erhöhtes labelpad verhindert Abschneiden
     if PLOT_SHOW_TITLE:
         ax4.set_title('3D View', fontsize=FONTSIZE_TITLE)
 
@@ -220,7 +220,7 @@ def plot_track_3d_time_resolved(track, output_path, title='Track'):
     ax4.scatter(x[-1], y[-1], z[-1], color='red', s=50, zorder=5, marker='s', edgecolors='black')
     ax4.set_xlabel('x / µm', fontsize=FONTSIZE_LABEL)
     ax4.set_ylabel('y / µm', fontsize=FONTSIZE_LABEL)
-    ax4.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL)
+    ax4.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL, labelpad=20)  # Erhöhtes labelpad verhindert Abschneiden
     if PLOT_SHOW_TITLE:
         ax4.set_title('3D View', fontsize=FONTSIZE_TITLE)
 
@@ -314,7 +314,7 @@ def plot_track_3d_snr(track, output_path, title='Track'):
     ax4.scatter(x[-1], y[-1], z[-1], color='red', s=50, zorder=5, marker='s', edgecolors='black')
     ax4.set_xlabel('x / µm', fontsize=FONTSIZE_LABEL)
     ax4.set_ylabel('y / µm', fontsize=FONTSIZE_LABEL)
-    ax4.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL)
+    ax4.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL, labelpad=20)  # Erhöhtes labelpad verhindert Abschneiden
     if PLOT_SHOW_TITLE:
         ax4.set_title('3D View', fontsize=FONTSIZE_TITLE)
 
@@ -548,6 +548,166 @@ def plot_z_histogram(tracks, output_path):
 #          CLASSIFIED TRACK 3D VISUALIZATION
 # =====================================================
 
+def plot_classified_track_3d_separate(track, segments, output_folder, track_id, title_prefix='Track'):
+    """
+    Plot 3D track with classification segments as SEPARATE files (xy, xz, yz, 3D).
+
+    Args:
+        track (dict): Track with 'x', 'y', 'z' arrays
+        segments (list): List of segment dicts with 'start', 'end', 'class'
+        output_folder (str): Output folder for plots
+        track_id (int): Track ID for filename
+        title_prefix (str): Prefix for plot titles
+    """
+    from config import NEW_COLORS
+    import os
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Downsample if track is very long
+    track = _downsample_track_for_plotting(track, max_points=10000)
+
+    x = track['x']
+    y = track['y']
+    z = track['z']
+    n = len(x)
+
+    # Create segment color map (frame-level coloring)
+    frame_colors = ['gray'] * n  # Default: unclassified
+    for seg in segments:
+        start = seg.get('start', 0)
+        end = seg.get('end', n-1)
+        seg_class = seg.get('class', 'UNKNOWN')
+        color = NEW_COLORS.get(seg_class, 'gray')
+        for i in range(start, min(end+1, n)):
+            frame_colors[i] = color
+
+    # Legend elements
+    from matplotlib.patches import Patch
+    legend_elements = []
+    classes_present = set(seg.get('class', 'UNKNOWN') for seg in segments)
+    for class_name in ['NORM. DIFFUSION', 'SUBDIFFUSION', 'CONFINED', 'SUPERDIFFUSION',
+                       'WEAK_SUBDIFFUSION', 'STRONG_SUBDIFFUSION', 'WEAK_SUPERDIFFUSION',
+                       'STRONG_SUPERDIFFUSION', 'DIRECTED', 'NORMAL']:
+        if class_name in classes_present:
+            legend_elements.append(Patch(facecolor=NEW_COLORS.get(class_name, 'gray'),
+                                        label=class_name))
+
+    # 1. XY Projection
+    fig_xy, ax_xy = plt.subplots(figsize=(8, 8))
+    for i in range(n-1):
+        ax_xy.plot(x[i:i+2], y[i:i+2], color=frame_colors[i], linewidth=LINEWIDTH_TRACK, alpha=0.7)
+    ax_xy.scatter(x[0], y[0], color='green', s=80, zorder=5, label='Start', marker='o', edgecolors='black', linewidths=2)
+    ax_xy.scatter(x[-1], y[-1], color='red', s=80, zorder=5, label='End', marker='s', edgecolors='black', linewidths=2)
+    ax_xy.set_xlabel('x / µm', fontsize=FONTSIZE_LABEL)
+    ax_xy.set_ylabel('y / µm', fontsize=FONTSIZE_LABEL)
+    if PLOT_SHOW_TITLE:
+        ax_xy.set_title(f'{title_prefix} {track_id} - XY Projection ({n} points)', fontsize=FONTSIZE_TITLE, fontweight='bold')
+    if legend_elements:
+        ax_xy.legend(handles=legend_elements + [Patch(facecolor='green', label='Start'), Patch(facecolor='red', label='End')],
+                    loc='best', fontsize=9, framealpha=0.9)
+    else:
+        ax_xy.legend(fontsize=9)
+    if PLOT_SHOW_GRID:
+        ax_xy.grid(True, alpha=0.3)
+    ax_xy.set_aspect('equal', adjustable='box')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, f'track_{track_id:04d}_xy.svg'), dpi=DPI_DEFAULT, bbox_inches='tight')
+    plt.close(fig_xy)
+
+    # 2. XZ Projection
+    fig_xz, ax_xz = plt.subplots(figsize=(8, 8))
+    for i in range(n-1):
+        ax_xz.plot(x[i:i+2], z[i:i+2], color=frame_colors[i], linewidth=LINEWIDTH_TRACK, alpha=0.7)
+    ax_xz.scatter(x[0], z[0], color='green', s=80, zorder=5, label='Start', marker='o', edgecolors='black', linewidths=2)
+    ax_xz.scatter(x[-1], z[-1], color='red', s=80, zorder=5, label='End', marker='s', edgecolors='black', linewidths=2)
+    ax_xz.set_xlabel('x / µm', fontsize=FONTSIZE_LABEL)
+    ax_xz.set_ylabel('z / µm', fontsize=FONTSIZE_LABEL)
+    if PLOT_SHOW_TITLE:
+        ax_xz.set_title(f'{title_prefix} {track_id} - XZ Projection ({n} points)', fontsize=FONTSIZE_TITLE, fontweight='bold')
+    if legend_elements:
+        ax_xz.legend(handles=legend_elements + [Patch(facecolor='green', label='Start'), Patch(facecolor='red', label='End')],
+                    loc='best', fontsize=9, framealpha=0.9)
+    else:
+        ax_xz.legend(fontsize=9)
+    if PLOT_SHOW_GRID:
+        ax_xz.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, f'track_{track_id:04d}_xz.svg'), dpi=DPI_DEFAULT, bbox_inches='tight')
+    plt.close(fig_xz)
+
+    # 3. YZ Projection
+    fig_yz, ax_yz = plt.subplots(figsize=(8, 8))
+    for i in range(n-1):
+        ax_yz.plot(y[i:i+2], z[i:i+2], color=frame_colors[i], linewidth=LINEWIDTH_TRACK, alpha=0.7)
+    ax_yz.scatter(y[0], z[0], color='green', s=80, zorder=5, label='Start', marker='o', edgecolors='black', linewidths=2)
+    ax_yz.scatter(y[-1], z[-1], color='red', s=80, zorder=5, label='End', marker='s', edgecolors='black', linewidths=2)
+    ax_yz.set_xlabel('y / µm', fontsize=FONTSIZE_LABEL)
+    ax_yz.set_ylabel('z / µm', fontsize=FONTSIZE_LABEL)
+    if PLOT_SHOW_TITLE:
+        ax_yz.set_title(f'{title_prefix} {track_id} - YZ Projection ({n} points)', fontsize=FONTSIZE_TITLE, fontweight='bold')
+    if legend_elements:
+        ax_yz.legend(handles=legend_elements + [Patch(facecolor='green', label='Start'), Patch(facecolor='red', label='End')],
+                    loc='best', fontsize=9, framealpha=0.9)
+    else:
+        ax_yz.legend(fontsize=9)
+    if PLOT_SHOW_GRID:
+        ax_yz.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, f'track_{track_id:04d}_yz.svg'), dpi=DPI_DEFAULT, bbox_inches='tight')
+    plt.close(fig_yz)
+
+    # 4. 3D View (LARGER and CLEARER with STRETCHED aspect ratio)
+    fig_3d = plt.figure(figsize=(14, 12))  # Larger figure for better visibility
+    ax_3d = fig_3d.add_subplot(111, projection='3d')
+
+    for i in range(n-1):
+        ax_3d.plot(x[i:i+2], y[i:i+2], z[i:i+2], color=frame_colors[i], linewidth=LINEWIDTH_TRACK*1.5, alpha=0.8)
+
+    ax_3d.scatter(x[0], y[0], z[0], color='green', s=120, zorder=5, marker='o', edgecolors='black', linewidths=2.5)
+    ax_3d.scatter(x[-1], y[-1], z[-1], color='red', s=120, zorder=5, marker='s', edgecolors='black', linewidths=2.5)
+
+    ax_3d.set_xlabel('x / µm', fontsize=FONTSIZE_LABEL+2, labelpad=10)
+    ax_3d.set_ylabel('y / µm', fontsize=FONTSIZE_LABEL+2, labelpad=10)
+    ax_3d.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL+2, labelpad=20)  # Erhöhtes labelpad verhindert Abschneiden
+
+    if PLOT_SHOW_TITLE:
+        ax_3d.set_title(f'{title_prefix} {track_id} - 3D View ({n} points)',
+                       fontsize=FONTSIZE_TITLE+2, fontweight='bold', pad=20)
+
+    # Better tick labels
+    ax_3d.tick_params(labelsize=FONTSIZE_TICK+1)
+
+    # STRETCHED ASPECT RATIO for better visual interpretation
+    # Calculate data ranges for each dimension
+    x_range = x.max() - x.min() if len(x) > 0 else 1
+    y_range = y.max() - y.min() if len(y) > 0 else 1
+    z_range = z.max() - z.min() if len(z) > 0 else 1
+
+    # Set aspect ratio to stretch each dimension proportionally
+    # This makes tracks much easier to interpret visually
+    max_range = max(x_range, y_range, z_range)
+    if max_range > 0:
+        # Stretch factor: makes smaller dimensions more visible
+        stretch_factor = 2.5
+        ax_3d.set_box_aspect([
+            x_range / max_range * stretch_factor,
+            y_range / max_range * stretch_factor,
+            z_range / max_range * stretch_factor
+        ])
+
+    # Legend
+    if legend_elements:
+        ax_3d.legend(handles=legend_elements, loc='upper left', fontsize=10, framealpha=0.9)
+
+    # Better viewing angle
+    ax_3d.view_init(elev=20, azim=45)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, f'track_{track_id:04d}_3d.svg'), dpi=DPI_DEFAULT, bbox_inches='tight')
+    plt.close(fig_3d)
+
+
 def plot_classified_track_3d(track, segments, output_path, title='Classified Track'):
     """
     Plot 3D track with classification segments in 4-panel view.
@@ -629,7 +789,7 @@ def plot_classified_track_3d(track, segments, output_path, title='Classified Tra
     ax4.scatter(x[-1], y[-1], z[-1], color='red', s=50, zorder=5, marker='s', edgecolors='black')
     ax4.set_xlabel('x / µm', fontsize=FONTSIZE_LABEL)
     ax4.set_ylabel('y / µm', fontsize=FONTSIZE_LABEL)
-    ax4.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL)
+    ax4.set_zlabel('z / µm', fontsize=FONTSIZE_LABEL, labelpad=20)  # Erhöhtes labelpad verhindert Abschneiden
     if PLOT_SHOW_TITLE:
         ax4.set_title('3D View', fontsize=FONTSIZE_TITLE)
 

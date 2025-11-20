@@ -1,5 +1,0 @@
-    TRACK_PLOT_DPI = 150  # OPTIMIERT: 150 statt 300 für schnelleres Speichern
-    SAVE_TRACK_PLOTS = True  # Auf False setzen für maximale Geschwindigkeit
-    VECTOR_PLOT_FORMAT = 'svg'
-
-    # Alpha-Fit Bereich (MSD-Lags)

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-🚀 TRAJECTORY ANALYSIS PIPELINE - START
+🚀 3D TRAJECTORY ANALYSIS PIPELINE - START
 
-Einstiegspunkt für die vollständige Trajektorien-Analyse Pipeline.
+Einstiegspunkt für die 3D Trajektorien-Analyse Pipeline.
 
-Unterstützt:
-- 2D Analyse (XML/CSV mit Segmenten)
-- 3D Analyse (Thunderstorm Lokalisierungen)
-- Mesh-Size Analyse
-- Time Series Analyse
-- Random Forest Klassifikation
-- Clustering
+Workflow:
+1. GUI: z-Korrekturwerte eingeben
+2. Ordnerwahl + Zeitzuweisung
+3. 3D Tracking (Thunderstorm → LAP)
+4. MSD Analyse
+5. Unsupervised Clustering
+6. Time Series Summary (D, Alpha, Distribution über Zeit)
 
 WICHTIG - GUI Anforderungen:
 ------------------------
@@ -26,7 +26,7 @@ Starte die Pipeline mit:
 oder:
     python3 Start.py
 
-Autor: Enhanced Trajectory Analysis Pipeline V9.0
+Autor: Enhanced 3D Trajectory Analysis Pipeline V10.0
 """
 
 import os
@@ -97,18 +97,18 @@ def main():
     """Hauptfunktion - startet die Pipeline"""
 
     print("="*80)
-    print("🚀 TRAJECTORY ANALYSIS PIPELINE - START")
+    print("🚀 3D TRAJECTORY ANALYSIS PIPELINE - START")
     print("="*80)
     print()
-    print("Willkommen zur Enhanced Trajectory Analysis Pipeline V9.0!")
+    print("Willkommen zur 3D Trajectory Analysis Pipeline V10.0!")
     print()
-    print("Unterstützte Workflows:")
-    print("  • 2D Analyse (XML/CSV mit Segmenten)")
-    print("  • 3D Analyse (Thunderstorm Lokalisierungen → Tracking → RF/Clustering)")
-    print("  • Mesh-Size Analyse (Ogston-Modell)")
-    print("  • Time Series Analyse")
-    print("  • Random Forest Klassifikation (automatisch)")
-    print("  • Unsupervised Clustering")
+    print("Workflow:")
+    print("  1. GUI: z-Korrekturwerte eingeben")
+    print("  2. Ordnerwahl + Zeitzuweisung")
+    print("  3. 3D Tracking (Thunderstorm → LAP)")
+    print("  4. MSD Analyse + Feature Extraction")
+    print("  5. Unsupervised Clustering")
+    print("  6. Time Series Summary (D, Alpha, Distribution)")
     print()
     print("="*80)
     print()
@@ -121,32 +121,32 @@ def main():
         sys.exit(1)
     logger.info("✓ Alle Dependencies vorhanden\n")
 
-    # 2. Import main pipeline (nach dependency check!)
+    # 2. Import 3D pipeline (nach dependency check!)
     try:
-        from main_pipeline import main as run_pipeline
+        from main_pipeline_3d import main as run_pipeline_3d
     except ImportError as e:
-        logger.error(f"❌ Fehler beim Laden der Pipeline: {e}")
+        logger.error(f"❌ Fehler beim Laden der 3D Pipeline: {e}")
         logger.error("Stelle sicher dass du im richtigen Verzeichnis bist!")
         sys.exit(1)
 
-    # 3. Starte Pipeline
-    print("▶ Starte Pipeline-GUI...")
+    # 3. Starte 3D Pipeline
+    print("▶ Starte 3D Pipeline-GUI...")
     print()
     print("Die Pipeline öffnet jetzt GUI-Dialogs für:")
-    print("  1. Dimensions-Modus auswählen (2D oder 3D)")
-    print("  2. Workflow konfigurieren")
-    print("  3. Ordner/Dateien auswählen")
+    print("  1. z-Korrekturwerte eingeben")
+    print("  2. Ordner auswählen (Thunderstorm CSV)")
+    print("  3. Zeitzuweisung konfigurieren")
     print()
     print("-"*80)
     print()
 
     try:
-        run_pipeline()
+        run_pipeline_3d()
 
         # Success
         print()
         print("="*80)
-        print("✅ PIPELINE ERFOLGREICH ABGESCHLOSSEN!")
+        print("✅ 3D PIPELINE ERFOLGREICH ABGESCHLOSSEN!")
         print("="*80)
 
     except KeyboardInterrupt:
@@ -169,9 +169,9 @@ def main():
 
 if __name__ == "__main__":
     # Prüfe dass wir im richtigen Verzeichnis sind
-    if not os.path.exists('main_pipeline.py'):
+    if not os.path.exists('main_pipeline_3d.py'):
         print("="*80)
-        print("❌ FEHLER: main_pipeline.py nicht gefunden!")
+        print("❌ FEHLER: main_pipeline_3d.py nicht gefunden!")
         print("="*80)
         print()
         print(f"Aktuelles Verzeichnis: {os.getcwd()}")

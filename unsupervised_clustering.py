@@ -30,13 +30,67 @@ from trajectory_statistics import calculate_trajectory_features
 logger = logging.getLogger(__name__)
 
 # =====================================================
+#          OPTIMIZED FEATURE LIST (18 Features) - 3D EXTENDED
+# =====================================================
+# Diese Features stammen aus dem 2D-Skript und wurden auf 3D erweitert
+# Reihenfolge nach Wichtigkeit
+
+OPTIMIZED_FEATURES_3D = [
+    'convex_hull_area',           # 1. Konvexe Hülle der Trajektorie (3D: Volumen)
+    'space_exploration_ratio',    # 2. Verhältnis besuchte Fläche/Volumen / Ausdehnung
+    'mean_cos_theta',             # 3. Mittlerer Cosinus der Turning Angles
+    'efficiency',                 # 4. Nettoverschiebungs-Effizienz
+    'alpha',                      # 5. Anomaler Exponent (lags 2-5)
+    'fractal_dimension',          # 6. Fraktale Dimension
+    'hurst_exponent',             # 7. Hurst-Exponent H = α/2
+    'msd_ratio',                  # 8. MSD-Ratio R(4,1)
+    'msd_plateauness',            # 9. MSD Plateau-Bildung
+    'vacf_lag1',                  # 10. Velocity Autocorrelation bei Lag 1
+    'straightness',               # 11. Straightness Index
+    'persistence_length',         # 12. Richtungspersistenz-Länge
+    'vacf_min',                   # 13. Minimum der VACF
+    'asphericity',                # 14. Räumliche Asymmetrie (3D-aware)
+    'boundary_proximity_var',     # 15. Varianz der Abstände vom Schwerpunkt
+    'kurtosis',                   # 16. Excess Kurtosis
+    'rg_saturation',              # 17. Radius of Gyration Sättigung
+    'confinement_probability',    # 18. Confinement-Wahrscheinlichkeit
+]
+
+def extract_optimized_features(full_features, dimension=3):
+    """
+    Extrahiert die 18 optimierten Features aus dem vollständigen Feature-Dict.
+
+    Args:
+        full_features: Dict mit allen Features von calculate_trajectory_features
+        dimension: 2 oder 3 (wird ignoriert, da wir nur 3D unterstützen)
+
+    Returns:
+        dict: Nur die optimierten Features
+    """
+    if full_features is None:
+        return None
+
+    optimized = {}
+    for key in OPTIMIZED_FEATURES_3D:
+        if key in full_features:
+            optimized[key] = full_features[key]
+        else:
+            # Fallback: NaN wenn Feature fehlt
+            optimized[key] = np.nan
+            logger.debug(f"Feature '{key}' nicht gefunden, verwende NaN")
+
+    return optimized
+
+# =====================================================
 #          KONSTANTEN
 # =====================================================
 
 WINDOW_SIZES = [10, 20, 30, 50, 100, 200]  # Verschiedene Window-Größen
 MIN_WINDOW_SIZE = 10                # Minimale Window-Größe
-MIN_SEG_LENGTH = 10                 # Minimale Segment-Länge für Rekonstruktion (reduziert für feinere Auflösung)
-N_CLUSTERS = 4                      # Anzahl Cluster (4 Diffusionsarten)
+MIN_SEG_LENGTH = 150                 # Minimale Segment-Länge für Rekonstruktion (reduziert für feinere Auflösung)
+N_CLUSTERS = 4                      # Default (wird automatisch optimiert!)
+MIN_CLUSTERS = 2                    # Minimum Anzahl Cluster
+MAX_CLUSTERS = 12                   # Maximum Anzahl Cluster zum Testen
 WINDOW_OVERLAP = 0.75                 # 50% Overlap zwischen Windows (reduziert von 0.75 für bessere Performance)
 RANDOM_SEED = 42                    # Seed für Reproduzierbarkeit
 
@@ -52,7 +106,9 @@ CLUSTERING_CLASSES = NEW_CLASSES
 
 def extract_features_from_window(trajectory_window, int_time=DEFAULT_INT_TIME):
     """
-    Liefert Feature-Set identisch zur Batch_2D_3D Pipeline.
+    Extrahiert Features aus Window und gibt NUR die optimierten Features zurück.
+
+    WICHTIG: Nutzt feature_config.py für konsistente Features zwischen Clustering & RF!
     """
     if len(trajectory_window) < 10:
         return None
@@ -69,7 +125,17 @@ def extract_features_from_window(trajectory_window, int_time=DEFAULT_INT_TIME):
     if arr.shape[1] >= 4:
         track['z'] = arr[:, 3]
 
-    return calculate_trajectory_features(track, int_time=int_time)
+    # Full feature extraction
+    full_features = calculate_trajectory_features(track, int_time=int_time)
+
+    if full_features is None:
+        return None
+
+    # Extract only optimized features (12 for 2D/3D)
+    dimension = 3 if arr.shape[1] >= 4 else 2
+    optimized_features = extract_optimized_features(full_features, dimension=dimension)
+
+    return optimized_features
 
 def extract_multi_window_features(trajectory, int_time=DEFAULT_INT_TIME):
     """
@@ -97,12 +163,12 @@ def extract_multi_window_features(trajectory, int_time=DEFAULT_INT_TIME):
         overlap = WINDOW_OVERLAP  # 50%
     elif traj_len < 2000:
         # Mittlere Trajektorien: Reduzierte Window-Sizes
-        window_sizes = [20, 50, 100]
+        window_sizes = [10, 20, 50, 100]
         overlap = WINDOW_OVERLAP  # 50%
     else:
         # LANGE Trajektorien (wie 9578 Frames): Nur große Windows, weniger Overlap
-        window_sizes = [50, 100, 200]
-        overlap = 0.3  # 30% Overlap (größerer Step für Performance)
+        window_sizes = [20, 50, 100, 200]
+        overlap = 0.5  # 30% Overlap (größerer Step für Performance)
 
     for window_size in window_sizes:
         if traj_len < window_size:
@@ -125,21 +191,78 @@ def extract_multi_window_features(trajectory, int_time=DEFAULT_INT_TIME):
 #          CLUSTERING
 # =====================================================
 
-def perform_clustering(features_list, n_clusters=N_CLUSTERS):
+def find_optimal_clusters(X_scaled, min_k=MIN_CLUSTERS, max_k=MAX_CLUSTERS):
+    """
+    Findet die optimale Anzahl an Clustern mit der Silhouette-Methode.
+
+    Die Silhouette Score misst, wie ähnlich ein Objekt zu seinem eigenen Cluster
+    im Vergleich zu anderen Clustern ist. Werte nahe +1 bedeuten, dass das Sample
+    weit weg von benachbarten Clustern ist. Werte nahe 0 bedeuten, dass das Sample
+    auf oder sehr nahe an der Entscheidungsgrenze zwischen zwei benachbarten Clustern liegt.
+
+    Args:
+        X_scaled: Skalierte Feature-Matrix
+        min_k: Minimum Anzahl Cluster (default: 2)
+        max_k: Maximum Anzahl Cluster (default: 12)
+
+    Returns:
+        int: Optimale Anzahl Cluster
+    """
+    from sklearn.metrics import silhouette_score
+
+    n_samples = X_scaled.shape[0]
+
+    # Passe max_k an verfügbare Samples an
+    max_k = min(max_k, n_samples - 1)
+
+    if max_k < min_k:
+        logger.warning(f"Zu wenig Samples ({n_samples}) für Cluster-Optimierung, verwende {min_k} Cluster")
+        return min_k
+
+    silhouette_scores = []
+    k_range = range(min_k, max_k + 1)
+
+    logger.info(f"  Optimiere Cluster-Anzahl (teste {min_k} bis {max_k})...")
+
+    for k in k_range:
+        try:
+            kmeans_temp = KMeans(n_clusters=k, random_state=RANDOM_SEED, n_init=10)
+            labels_temp = kmeans_temp.fit_predict(X_scaled)
+
+            # Berechne Silhouette Score
+            score = silhouette_score(X_scaled, labels_temp)
+            silhouette_scores.append(score)
+            logger.debug(f"    k={k}: Silhouette Score = {score:.3f}")
+        except Exception as e:
+            logger.debug(f"    k={k}: Fehler - {e}")
+            silhouette_scores.append(-1)  # Ungültiger Score
+
+    # Finde k mit höchstem Silhouette Score
+    if silhouette_scores:
+        best_idx = np.argmax(silhouette_scores)
+        optimal_k = list(k_range)[best_idx]
+        best_score = silhouette_scores[best_idx]
+        logger.info(f"  ✓ Optimale Cluster-Anzahl: {optimal_k} (Silhouette Score: {best_score:.3f})")
+        return optimal_k
+    else:
+        logger.warning(f"  Cluster-Optimierung fehlgeschlagen, verwende Default: {N_CLUSTERS}")
+        return N_CLUSTERS
+
+def perform_clustering(features_list, n_clusters=None, auto_optimize=True):
     """
     Führt K-Means Clustering auf Features durch.
 
+    NEU: Findet automatisch die optimale Anzahl Cluster (2-12) mit Silhouette-Methode!
+    Dann werden alle Cluster den 4 physikalischen Klassen zugeordnet.
+
     Args:
         features_list: Liste von Feature-Dicts
-        n_clusters: Anzahl Cluster
+        n_clusters: Anzahl Cluster (None = auto-optimize)
+        auto_optimize: Ob automatische Cluster-Optimierung verwendet werden soll
 
     Returns:
-        (labels, kmeans_model, scaler)
+        (labels, kmeans_model, scaler, n_clusters_used, feature_names)
     """
-    if len(features_list) < n_clusters:
-        logger.warning(f"Zu wenig Samples ({len(features_list)}) für {n_clusters} Cluster")
-        return None, None, None
-
     # Features zu Matrix konvertieren
     feature_names = list(features_list[0].keys())
     X = np.array([[f[name] for name in feature_names] for f in features_list])
@@ -150,7 +273,7 @@ def perform_clustering(features_list, n_clusters=N_CLUSTERS):
 
     if not np.any(non_constant_mask):
         logger.warning("Alle Features sind konstant - Clustering nicht möglich")
-        return None, None, None
+        return None, None, None, 0, []
 
     if not np.all(non_constant_mask):
         # Entferne konstante Features
@@ -165,28 +288,43 @@ def perform_clustering(features_list, n_clusters=N_CLUSTERS):
         X_scaled = scaler.fit_transform(X)
     except Exception as e:
         logger.warning(f"StandardScaler fehlgeschlagen: {e}")
-        return None, None, None
+        return None, None, None, 0, []
 
     # Prüfe auf NaN/Inf nach Skalierung
     if not np.all(np.isfinite(X_scaled)):
         logger.warning("NaN oder Inf nach Skalierung - Clustering nicht möglich")
-        return None, None, None
+        return None, None, None, 0, []
+
+    # ===== AUTOMATIC CLUSTER OPTIMIZATION (NEW!) =====
+    if n_clusters is None and auto_optimize:
+        n_clusters = find_optimal_clusters(X_scaled, MIN_CLUSTERS, MAX_CLUSTERS)
+    elif n_clusters is None:
+        n_clusters = N_CLUSTERS  # Fallback to default
+
+    # Check if we have enough samples
+    if len(features_list) < n_clusters:
+        logger.warning(f"Zu wenig Samples ({len(features_list)}) für {n_clusters} Cluster, reduziere auf {MIN_CLUSTERS}")
+        n_clusters = MIN_CLUSTERS
 
     # K-Means Clustering
+    logger.info(f"  Führe K-Means Clustering mit {n_clusters} Clustern durch...")
     kmeans = KMeans(n_clusters=n_clusters, random_state=RANDOM_SEED, n_init=10)
     labels = kmeans.fit_predict(X_scaled)
 
-    return labels, kmeans, scaler
+    return labels, kmeans, scaler, n_clusters, feature_names
 
 def assign_physical_labels(cluster_centers, feature_names, scaler, features_list):
     """
-    Weist Clustern physikalisch motivierte Labels zu.
+    Weist Clustern physikalisch motivierte Labels zu (SPT-Literatur 2024).
 
-    Basiert auf tatsächlichen (unstandardisierten) Alpha-Werten:
-    - SUPERDIFFUSION: α > 1.2
-    - NORM. DIFFUSION: 0.8 < α < 1.2
-    - SUBDIFFUSION: 0.3 < α < 0.8
-    - CONFINED: α < 0.3
+    4-KLASSEN-SYSTEM (Literature-based, identical to Threshold for consistency):
+    1. CONFINED:        SPATIAL confinement (MSD plateau, low space exploration)
+                        → Alpha can be ANY value!
+    2. SUBDIFFUSION:    α < 0.9 AND not confined (hindered diffusion)
+    3. SUPERDIFFUSION:  α > 1.1 AND straightness > 0.6 (BOTH required!)
+    4. NORM. DIFFUSION: Everything else (including high α with low straightness)
+
+    Literature: Same as threshold_classifier.py for consistency
 
     Args:
         cluster_centers: Cluster-Zentren (standardisiert)
@@ -197,50 +335,84 @@ def assign_physical_labels(cluster_centers, feature_names, scaler, features_list
     Returns:
         dict: {cluster_id: class_name}
     """
+    # Get feature indices
     alpha_idx = feature_names.index('alpha') if 'alpha' in feature_names else None
+    straightness_idx = feature_names.index('straightness') if 'straightness' in feature_names else None
+    msd_plateauness_idx = feature_names.index('msd_plateauness') if 'msd_plateauness' in feature_names else None
+    msd_ratio_idx = feature_names.index('msd_ratio') if 'msd_ratio' in feature_names else None
+    space_exploration_idx = feature_names.index('space_exploration_ratio') if 'space_exploration_ratio' in feature_names else None
+    confinement_prob_idx = feature_names.index('confinement_probability') if 'confinement_probability' in feature_names else None
+    rg_saturation_idx = feature_names.index('rg_saturation') if 'rg_saturation' in feature_names else None
 
     if alpha_idx is None:
         logger.warning("Alpha nicht in Features, verwende Default-Mapping")
         return {i: CLUSTERING_CLASSES[i] for i in range(len(cluster_centers))}
 
-    # Rücktransformiere Cluster-Zentren zu tatsächlichen Alpha-Werten
+    # Rücktransformiere Cluster-Zentren
     cluster_centers_orig = scaler.inverse_transform(cluster_centers)
-    alpha_values_orig = cluster_centers_orig[:, alpha_idx]
 
-    # Physikalische Thresholds für Alpha
-    ALPHA_THRESHOLD_SUPER = 1.2      # α > 1.2 → SUPERDIFFUSION
-    ALPHA_THRESHOLD_NORMAL_HIGH = 1.2
-    ALPHA_THRESHOLD_NORMAL_LOW = 0.8  # 0.8 < α < 1.2 → NORMAL
-    ALPHA_THRESHOLD_SUB_HIGH = 0.8
-    ALPHA_THRESHOLD_SUB_LOW = 0.3     # 0.3 < α < 0.8 → SUBDIFFUSION
-    ALPHA_THRESHOLD_CONFINED = 0.3    # α < 0.3 → CONFINED
+    # SPT-Literature thresholds (matching threshold_classifier.py)
+    ALPHA_SUBDIFFUSION_MAX = 0.9
+    ALPHA_SUPERDIFFUSION_MIN = 1.1
+    STRAIGHTNESS_MIN_SUPERDIFFUSION = 0.6
+    MSD_PLATEAU_RATIO_THRESHOLD = 1.3
+    MSD_PLATEAUNESS_THRESHOLD = 0.15
+    SPACE_EXPLORATION_LOW = 0.3
+    CONFINEMENT_PROB_HIGH = 0.6
 
     label_mapping = {}
 
     for cluster_id in range(len(cluster_centers)):
-        alpha = alpha_values_orig[cluster_id]
+        alpha = cluster_centers_orig[cluster_id, alpha_idx]
+        straightness = cluster_centers_orig[cluster_id, straightness_idx] if straightness_idx is not None else 0.5
+        msd_plateauness = cluster_centers_orig[cluster_id, msd_plateauness_idx] if msd_plateauness_idx is not None else 1.0
+        msd_ratio = cluster_centers_orig[cluster_id, msd_ratio_idx] if msd_ratio_idx is not None else 1.0
+        space_exploration = cluster_centers_orig[cluster_id, space_exploration_idx] if space_exploration_idx is not None else 1.0
+        confinement_prob = cluster_centers_orig[cluster_id, confinement_prob_idx] if confinement_prob_idx is not None else 0.0
+        rg_saturation = cluster_centers_orig[cluster_id, rg_saturation_idx] if rg_saturation_idx is not None else 1.0
 
-        if alpha > ALPHA_THRESHOLD_SUPER:
-            label_mapping[cluster_id] = 'SUPERDIFFUSION'
-        elif alpha > ALPHA_THRESHOLD_NORMAL_LOW:
-            label_mapping[cluster_id] = 'NORM. DIFFUSION'
-        elif alpha > ALPHA_THRESHOLD_CONFINED:
-            label_mapping[cluster_id] = 'SUBDIFFUSION'
-        else:
+        # ========== 1. CONFINED (SPATIAL confinement, independent of alpha!) ==========
+        confinement_score = 0
+        if msd_plateauness < MSD_PLATEAUNESS_THRESHOLD:
+            confinement_score += 2
+        if msd_ratio < MSD_PLATEAU_RATIO_THRESHOLD:
+            confinement_score += 2
+        if space_exploration < SPACE_EXPLORATION_LOW:
+            confinement_score += 1
+        if confinement_prob > CONFINEMENT_PROB_HIGH:
+            confinement_score += 2
+        if rg_saturation < 0.3:
+            confinement_score += 1
+
+        # Nur bei hohem Confinement-Score UND klar subdiffusivem Alpha als CONFINED klassifizieren.
+        # Dadurch wird CONFINED st�rker von SUBDIFFUSION/NORMAL getrennt.
+        if confinement_score >= 4 and not np.isnan(alpha) and alpha < ALPHA_SUBDIFFUSION_MAX:
             label_mapping[cluster_id] = 'CONFINED'
+            continue
 
-    # Sicherstellen, dass alle 4 Klassen vorhanden sind
-    # Falls nicht, weise fehlende Klassen basierend auf Nähe zu Thresholds zu
+        # ========== 2. SUPERDIFFUSION (BOTH high alpha AND high straightness!) ==========
+        if alpha > ALPHA_SUPERDIFFUSION_MIN and straightness > STRAIGHTNESS_MIN_SUPERDIFFUSION:
+            label_mapping[cluster_id] = 'SUPERDIFFUSION'
+            continue
+
+        # ========== 3. SUBDIFFUSION (α < 0.9, not confined) ==========
+        if alpha < ALPHA_SUBDIFFUSION_MAX:
+            label_mapping[cluster_id] = 'SUBDIFFUSION'
+            continue
+
+        # ========== 4. NORMAL DIFFUSION (Default) ==========
+        label_mapping[cluster_id] = 'NORM. DIFFUSION'
+
+    # Sicherstellen, dass alle 4 Klassen vorhanden sind (falls nötig)
     missing_classes = set(CLUSTERING_CLASSES) - set(label_mapping.values())
     if missing_classes:
         logger.debug(f"Fehlende Klassen werden zugewiesen: {missing_classes}")
-        # Sortiere nach Alpha-Wert
-        sorted_indices = np.argsort(alpha_values_orig)
+        # Sort by alpha for assignment
+        alpha_values = cluster_centers_orig[:, alpha_idx]
+        sorted_indices = np.argsort(alpha_values)
 
-        # Weise fehlende Klassen zu
         missing_list = sorted(missing_classes, key=lambda c: CLUSTERING_CLASSES.index(c))
         for cls in missing_list:
-            # Finde Cluster ohne Zuweisung
             for cluster_id in sorted_indices:
                 if cluster_id not in label_mapping:
                     label_mapping[cluster_id] = cls
@@ -284,7 +456,24 @@ def reconstruct_track_segmentation(trajectory, window_results, min_seg_length=MI
         else:
             frame_labels.append(None)
 
-    # Segmente bilden
+    # L��cken ohne Votes mit n��chstliegenden Labels auff��llen,
+    # damit es keine "Unclassified" Bereiche mehr gibt.
+    last_label = None
+    for i, label in enumerate(frame_labels):
+        if label is None and last_label is not None:
+            frame_labels[i] = last_label
+        elif label is not None:
+            last_label = label
+
+    last_label = None
+    for i in range(len(frame_labels) - 1, -1, -1):
+        label = frame_labels[i]
+        if label is None and last_label is not None:
+            frame_labels[i] = last_label
+        elif label is not None:
+            last_label = label
+
+    # Segmente zuerst ohne Längen-Filter bilden
     segments = []
     current_seg = None
 
@@ -295,17 +484,25 @@ def reconstruct_track_segmentation(trajectory, window_results, min_seg_length=MI
         if current_seg is None:
             current_seg = {'start': i, 'class': label}
         elif current_seg['class'] != label:
-            # Segment beenden
             current_seg['end'] = i - 1
-            if current_seg['end'] - current_seg['start'] + 1 >= min_seg_length:
-                segments.append(current_seg)
+            segments.append(current_seg)
             current_seg = {'start': i, 'class': label}
 
-    # Letztes Segment
     if current_seg is not None:
         current_seg['end'] = len(frame_labels) - 1
-        if current_seg['end'] - current_seg['start'] + 1 >= min_seg_length:
-            segments.append(current_seg)
+        segments.append(current_seg)
+
+    # Kurze Segmente werden in den vorherigen Abschnitt gemerged,
+    # statt komplett entfernt zu werden (vermeidet "unclassified" Gaps).
+    if min_seg_length is not None and min_seg_length > 1 and segments:
+        merged_segments = []
+        for seg in segments:
+            seg_len = seg['end'] - seg['start'] + 1
+            if seg_len < min_seg_length and merged_segments:
+                merged_segments[-1]['end'] = seg['end']
+            else:
+                merged_segments.append(seg)
+        segments = merged_segments
 
     return segments
 
@@ -332,7 +529,7 @@ def cluster_trajectory(traj_id, trajectory, int_time=DEFAULT_INT_TIME):
     # 1. Feature-Extraktion
     window_features = extract_multi_window_features(trajectory, int_time)
 
-    if len(window_features) < N_CLUSTERS:
+    if len(window_features) < MIN_CLUSTERS:
         logger.debug(f"Track {traj_id}: Zu wenig Windows für Clustering")
         return None
 
@@ -340,14 +537,15 @@ def cluster_trajectory(traj_id, trajectory, int_time=DEFAULT_INT_TIME):
     features_only = [f[2] for f in window_features]  # (window_size, start_idx, features)
     metadata = [(f[0], f[1]) for f in window_features]  # (window_size, start_idx)
 
-    # 3. Clustering
-    labels, kmeans, scaler = perform_clustering(features_only, N_CLUSTERS)
+    # 3. Clustering (AUTO-OPTIMIZED! Finds best number of clusters 2-12)
+    labels, kmeans, scaler, n_clusters_used, feature_names = perform_clustering(features_only, n_clusters=None, auto_optimize=True)
 
     if labels is None:
         return None
 
     # 4. Label-Mapping (physikalisch motiviert)
-    feature_names = list(features_only[0].keys())
+    # Maps ALL clusters to 4 physical classes using SPT thresholds!
+    # Use the filtered feature_names returned from perform_clustering (constant features removed)
     label_mapping = assign_physical_labels(kmeans.cluster_centers_, feature_names, scaler, features_only)
 
     # 5. Cluster-Labels zu physikalischen Labels
@@ -364,7 +562,8 @@ def cluster_trajectory(traj_id, trajectory, int_time=DEFAULT_INT_TIME):
         'traj_id': traj_id,
         'segments': segments,
         'n_windows': len(window_features),
-        'n_segments': len(segments)
+        'n_segments': len(segments),
+        'n_clusters': n_clusters_used  # How many clusters were found
     }
 
 # =====================================================
@@ -526,50 +725,97 @@ def create_clustering_statistics(clustering_results, output_folder, trajectories
         trajectories: dict {traj_id: trajectory} (optional, für Feature-Extraktion)
         int_time: Integration time
     """
+    def _resolve_segment_indices(segment):
+        """Ermittelt Start/Ende eines Segments, egal welche Key-Namen genutzt wurden."""
+        def _first_valid(keys):
+            for key in keys:
+                if key in segment and segment[key] is not None:
+                    try:
+                        return int(segment[key])
+                    except (TypeError, ValueError):
+                        return None
+            return None
+
+        start_idx = _first_valid(('start', 'start_idx', 'start_frame', 'Start_Frame'))
+
+        end_idx = _first_valid(('end', 'end_idx'))
+        if end_idx is None and start_idx is not None:
+            window_size = segment.get('window_size')
+            if window_size is not None:
+                try:
+                    end_idx = start_idx + int(window_size) - 1
+                except (TypeError, ValueError):
+                    end_idx = None
+
+        if end_idx is None:
+            raw_end = _first_valid(('end_frame', 'End_Frame'))
+            if raw_end is not None:
+                if start_idx is not None and raw_end >= start_idx and ('start_frame' in segment or 'window_size' in segment):
+                    end_idx = raw_end - 1
+                else:
+                    end_idx = raw_end
+
+        return start_idx, end_idx
+
     os.makedirs(output_folder, exist_ok=True)
 
     # 1. Alle Segmente sammeln (MIT Alpha, D und allen 18 Features!)
     all_segments = []
     for traj_id, result in clustering_results.items():
-        for seg_idx, seg in enumerate(result['segments']):
+        segments = result.get('segments', [])
+        for seg_idx, seg in enumerate(segments):
+            start_idx, end_idx = _resolve_segment_indices(seg)
+
+            if start_idx is None or end_idx is None or end_idx < start_idx:
+                logger.debug(f"Überspringe Segment {seg_idx} in Track {traj_id}: fehlende oder ungültige Indizes")
+                continue
+
             seg_info = {
                 'Trajectory_ID': traj_id,
                 'Segment_Index': seg_idx,
-                'Class': seg['class'],
-                'Start_Frame': seg['start'],
-                'End_Frame': seg['end'],
-                'Length': seg['end'] - seg['start'] + 1
+                'Class': seg.get('class', 'UNKNOWN'),
+                'Start_Frame': start_idx,
+                'End_Frame': end_idx,
+                'Length': max(0, end_idx - start_idx + 1)
             }
 
             # Feature-Extraktion wenn Trajektorien verfügbar sind
             if trajectories is not None and traj_id in trajectories:
                 trajectory = trajectories[traj_id]
-                segment_traj = trajectory[seg['start']:seg['end']+1]
+                track_len = len(trajectory)
+                if track_len == 0:
+                    logger.debug(f"Track {traj_id} ohne Punkte - überspringe Segmentfeatures")
+                    all_segments.append(seg_info)
+                    continue
+
+                seg_start = max(0, min(start_idx, track_len - 1))
+                seg_end = max(seg_start, min(end_idx, track_len - 1))
+                segment_traj = trajectory[seg_start:seg_end+1]
 
                 if len(segment_traj) >= 10:  # Min 10 Punkte für Features
                     features = extract_features_from_window(segment_traj, int_time)
 
                     if features is not None:
-                        # Füge alle 18 Features + D hinzu
-                        seg_info['Alpha'] = features['alpha']
-                        seg_info['D'] = features['D']
-                        seg_info['Hurst_Exponent'] = features['hurst_exponent']
-                        seg_info['MSD_Ratio'] = features['msd_ratio']
-                        seg_info['MSD_Plateauness'] = features['msd_plateauness']
-                        seg_info['Convex_Hull_Area'] = features['convex_hull_area']
-                        seg_info['Space_Exploration_Ratio'] = features['space_exploration_ratio']
-                        seg_info['Mean_Cos_Theta'] = features['mean_cos_theta']
-                        seg_info['Efficiency'] = features['efficiency']
-                        seg_info['Straightness'] = features['straightness']
-                        seg_info['VACF_Lag1'] = features['vacf_lag1']
-                        seg_info['VACF_Min'] = features['vacf_min']
-                        seg_info['Persistence_Length'] = features['persistence_length']
-                        seg_info['Fractal_Dimension'] = features['fractal_dimension']
-                        seg_info['Asphericity'] = features['asphericity']
-                        seg_info['Kurtosis'] = features['kurtosis']
-                        seg_info['RG_Saturation'] = features['rg_saturation']
-                        seg_info['Boundary_Proximity_Var'] = features['boundary_proximity_var']
-                        seg_info['Confinement_Probability'] = features['confinement_probability']
+                        # Füge nur die 12 OPTIMIERTEN Features hinzu (sicher mit .get())
+                        # MSD Features
+                        seg_info['D'] = features.get('D', 0.0)
+                        seg_info['Alpha'] = features.get('alpha', 1.0)
+                        seg_info['Hurst_Exponent'] = features.get('hurst_exponent', 0.5)
+                        seg_info['MSD_Plateauness'] = features.get('msd_plateauness', 0.0)
+
+                        # Shape Features
+                        seg_info['Asphericity'] = features.get('asphericity', 0.0)
+                        seg_info['Convex_Hull_Area'] = features.get('convex_hull_area', 0.0)
+                        seg_info['Gyration_Anisotropy'] = features.get('gyration_anisotropy', 0.0)
+
+                        # Mobility Features
+                        seg_info['Radial_ACF_Lag1'] = features.get('radial_acf_lag1', 0.0)
+                        seg_info['Persistence_Length'] = features.get('persistence_length', 0.0)
+
+                        # Spatial Features
+                        seg_info['Space_Exploration_Ratio'] = features.get('space_exploration_ratio', 0.0)
+                        seg_info['Boundary_Proximity_Var'] = features.get('boundary_proximity_var', 0.0)
+                        seg_info['Centroid_Dwell_Fraction'] = features.get('centroid_dwell_fraction', 0.0)
 
             all_segments.append(seg_info)
 
@@ -782,31 +1028,23 @@ def clustering_results_to_dataframe(clustering_results, trajectories, int_time=D
                     'End_Frame': end_idx,
                     'Length': end_idx - start_idx + 1,
                     'Class': class_name,
-                    # CamelCase für Konsistenz mit time_series.py FEATURE_NAMES
-                    'Alpha': features['alpha'],
-                    'D': features['D'],  # Diffusionskoeffizient
-                    'Hurst_Exponent': features['hurst_exponent'],
-                    'MSD_Ratio': features['msd_ratio'],
-                    'MSD_Plateauness': features['msd_plateauness'],
-                    'Convex_Hull_Area': features['convex_hull_area'],
-                    'Space_Exploration_Ratio': features['space_exploration_ratio'],
-                    'Mean_Cos_Theta': features['mean_cos_theta'],
-                    'Efficiency': features['efficiency'],
-                    'Straightness': features['straightness'],
-                    'VACF_Lag1': features['vacf_lag1'],
-                    'VACF_Min': features['vacf_min'],
-                    'Persistence_Length': features['persistence_length'],
-                    'Fractal_Dimension': features['fractal_dimension'],
-                    'Asphericity': features['asphericity'],
+                    # NUR die 12 OPTIMIERTEN Features (sicher mit .get())
+                    # MSD Features
+                    'D': features.get('D', 0.0),
+                    'Alpha': features.get('alpha', 1.0),
+                    'Hurst_Exponent': features.get('hurst_exponent', 0.5),
+                    'MSD_Plateauness': features.get('msd_plateauness', 0.0),
+                    # Shape Features
+                    'Asphericity': features.get('asphericity', 0.0),
+                    'Convex_Hull_Area': features.get('convex_hull_area', 0.0),
                     'Gyration_Anisotropy': features.get('gyration_anisotropy', 0.0),
-                    'Kurtosis': features['kurtosis'],
-                    'RG_Saturation': features['rg_saturation'],
-                    'Boundary_Proximity_Var': features['boundary_proximity_var'],
-                    'Centroid_Dwell_Fraction': features.get('centroid_dwell_fraction', 0.0),
-                    'Boundary_Hit_Ratio': features.get('boundary_hit_ratio', 0.0),
+                    # Mobility Features
                     'Radial_ACF_Lag1': features.get('radial_acf_lag1', 0.0),
-                    'Step_Variance_Ratio': features.get('step_variance_ratio', 1.0),
-                    'Confinement_Probability': features['confinement_probability']
+                    'Persistence_Length': features.get('persistence_length', 0.0),
+                    # Spatial Features
+                    'Space_Exploration_Ratio': features.get('space_exploration_ratio', 0.0),
+                    'Boundary_Proximity_Var': features.get('boundary_proximity_var', 0.0),
+                    'Centroid_Dwell_Fraction': features.get('centroid_dwell_fraction', 0.0)
                 }
                 all_data.append(data_row)
 
@@ -920,7 +1158,7 @@ def perform_clustering_analysis(tracks, int_time, output_folder):
         create_clustering_statistics(results, stats_folder, trajectories_2d, int_time)
         logger.info(f"  ✓ Statistiken erstellt: {stats_folder}")
 
-        # Create track visualizations (Top 10 longest tracks only)
+        # Create track visualizations (Top 10 longest tracks with SEPARATE xy/xz/yz/3D plots, like Threshold)
         tracks_folder = os.path.join(output_folder, 'clustered_tracks')
         os.makedirs(tracks_folder, exist_ok=True)
 
@@ -934,19 +1172,26 @@ def perform_clustering_analysis(tracks, int_time, output_folder):
 
         plotted = 0
         for track_id in top_10_track_ids:
-            output_path = os.path.join(tracks_folder, f'track_{track_id:04d}_clustered_3d.svg')
             try:
-                # Use 3D visualization (4-panel XY/XZ/YZ/3D with colored segments)
-                from viz_3d import plot_classified_track_3d
+                # Use SEPARATE 3D visualizations (xy, xz, yz, 3D separate files - SAME as Threshold!)
+                from viz_3d import plot_classified_track_3d_separate
                 if track_id in tracks_dict:
                     track_3d = tracks_dict[track_id]
                     segments = results[track_id].get('segments', [])
-                    plot_classified_track_3d(track_3d, segments, output_path, title=f'Track {track_id} (Clustering)')
+                    # Create a subfolder for each track with separate views
+                    track_subfolder = os.path.join(tracks_folder, f'track_{track_id:04d}_clustering')
+                    plot_classified_track_3d_separate(
+                        track_3d,
+                        segments,
+                        track_subfolder,
+                        track_id,
+                        title_prefix='Clustering Track'
+                    )
                     plotted += 1
             except Exception as e:
                 logger.warning(f"    Track {track_id} Plot fehlgeschlagen: {e}")
 
-        logger.info(f"  ✓ {plotted} Clustered Tracks geplottet in 3D (Top 10): {tracks_folder}")
+        logger.info(f"  ✓ {plotted} Clustered Tracks geplottet in 3D (Top 10, separate xy/xz/yz/3D): {tracks_folder}")
 
     except Exception as e:
         logger.warning(f"  ⚠ Visualisierungen teilweise fehlgeschlagen: {e}")
